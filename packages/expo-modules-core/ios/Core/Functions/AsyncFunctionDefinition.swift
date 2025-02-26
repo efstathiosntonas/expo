@@ -92,27 +92,54 @@ public final class AsyncFunctionDefinition<Args, FirstArgType, ReturnType>: AnyA
     let queue = queue ?? defaultQueue
 
     queue.async { [body, name] in
-      let returnedValue: ReturnType?
+      self.maybeDispatchCallWithUIManager(appContext: appContext, arguments: arguments, queue: queue) {
+        let returnedValue: ReturnType?
 
-      do {
-        // Convert arguments to the types desired by the function.
-        arguments = try cast(arguments: arguments, forFunction: self, appContext: appContext)
+        do {
+          // Convert arguments to the types desired by the function.
+          arguments = try cast(arguments: arguments, forFunction: self, appContext: appContext)
 
-        // swiftlint:disable:next force_cast
-        let argumentsTuple = try Conversions.toTuple(arguments) as! Args
+          // swiftlint:disable:next force_cast
+          let argumentsTuple = try Conversions.toTuple(arguments) as! Args
 
-        returnedValue = try body(argumentsTuple)
-      } catch let error as Exception {
-        promise.reject(FunctionCallException(name).causedBy(error))
-        return
-      } catch {
-        promise.reject(UnexpectedException(error))
-        return
-      }
-      if !self.takesPromise {
-        promise.resolve(returnedValue)
+          returnedValue = try body(argumentsTuple)
+        } catch let error as Exception {
+          promise.reject(FunctionCallException(name).causedBy(error))
+          return
+        } catch {
+          promise.reject(UnexpectedException(error))
+          return
+        }
+        if !self.takesPromise {
+          promise.resolve(returnedValue)
+        }
       }
     }
+  }
+
+  /**
+   * Checks if the `AsyncFunction` is a method of a `View`. If it is and the `View` has not yet been registered in the view registry it re-dispatches the block
+   * through UIManager to make sure that the relevant view has been registered at the time of the call.
+   */
+  private func maybeDispatchCallWithUIManager(appContext: AppContext, arguments: [Any], queue: DispatchQueue, _ block: @escaping () -> Void) {
+#if RCT_NEW_ARCH_ENABLED
+    // Checks if this is a view function unregistered in the view registry. The check can be performed from the main thread only.
+    if let viewTag = arguments.first as? Int,
+      self.dynamicArgumentTypes.first is DynamicViewType,
+      let uiManager = appContext.reactBridge?.uiManager,
+      Thread.isMainThread, // swiftlint:disable:next legacy_objc_type
+      uiManager.view(forReactTag: NSNumber(value: viewTag)) == nil {
+      // Schedule the block on the original queue through UI manager if view is missing in the registry.
+      uiManager.addUIBlock { _, _ in
+        queue.async {
+          block()
+        }
+      }
+      return
+    }
+#endif
+    // Schedule the block as normal.
+    block()
   }
 
   // MARK: - JavaScriptObjectBuilder
